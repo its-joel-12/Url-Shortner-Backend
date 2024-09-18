@@ -1,0 +1,96 @@
+trigger:
+  branches:
+    include:
+      - backend_dev
+      - backend
+
+variables:
+  sshPrivateKey: $(SSH_PRIVATE_KEY)
+  ec2Host: '52.70.158.35'
+  ec2User: 'ubuntu'
+  remotePath: '/var/lib/tomcat10/webapps'
+  SPRING_REDIS_HOST: "127.0.0.1"
+  SPRING_REDIS_PORT: "6379"
+  SPRING_REDIS_USER: ""
+  SPRING_REDIS_PASS: ""
+  SPRING_REDIS_DATABASE_NO: "0"
+  SPRING_REDIS_TEST_DATABASE_NO: "1"
+  shortUrlDomain: $(SHORT_URL_DOMAIN)
+  API_KEY: $(API_KEY_ENV)
+  DECRYPT_KEY: $(DECRYPT_KEY_ENV)
+
+pool:
+  vmImage: "ubuntu-latest"
+
+services:
+  redis:
+    image: redis
+    ports:
+      - 6379:6379
+
+steps:
+- script: |
+    export SPRING_REDIS_HOST=$(SPRING_REDIS_HOST)
+    export SPRING_REDIS_PORT=$(SPRING_REDIS_PORT)
+    export SPRING_REDIS_USER=$(SPRING_REDIS_USER)
+    export SPRING_REDIS_PASS=$(SPRING_REDIS_PASS)
+    export SPRING_REDIS_DATABASE_NO=$(SPRING_REDIS_DATABASE_NO)
+    export SPRING_REDIS_TEST_DATABASE_NO=$(SPRING_REDIS_TEST_DATABASE_NO)
+    export API_KEY=$(API_KEY)
+    export DECRYPT_KEY=$(DECRYPT_KEY)
+    export SHORT_URL_DOMAIN=$(shortUrlDomain)
+  displayName: 'Set Env Variables'
+
+- task: Maven@4
+  inputs:
+    mavenPomFile: 'url-short-service/pom.xml'
+    mavenOptions: '-Xmx3072m'
+    # mavenVersionOption: '3.9.8'
+    # javaHomeOption: 'JDKVersion'
+    jdkVersionOption: '21'
+    jdkArchitectureOption: 'x64'
+    publishJUnitResults: true
+    testResultsFiles: '**/surefire-reports/TEST-*.xml'
+    goals: 'clean test'
+  displayName: 'Unit Tests'
+  #condition: eq(variables['Build.SourceBranchName'], 'backend_dev')
+
+- task: Maven@4
+  inputs:
+    mavenPomFile: 'url-short-service/pom.xml'
+    mavenOptions: '-Xmx3072m'
+    # mavenVersionOption: '3.9.8'
+    javaHomeOption: 'JDKVersion'
+    jdkVersionOption: '21'
+    jdkArchitectureOption: 'x64'
+    publishJUnitResults: true
+    testResultsFiles: '**/surefire-reports/TEST-*.xml'
+    goals: 'clean package'
+  displayName: 'Build Project'
+  condition: eq(variables['Build.SourceBranchName'], 'backend')
+
+
+- task: PublishBuildArtifacts@1
+  inputs:
+    PathtoPublish: '$(System.DefaultWorkingDirectory)/url-short-service/target/c-url-short-service.war'
+    ArtifactName: 'springboot-build'
+    publishLocation: 'Container'
+  displayName: 'Save Artifact'
+  condition: eq(variables['Build.SourceBranchName'], 'backend')
+
+- script: |
+    echo "Creating temporary SSH key file"
+    touch /tmp/temp_ssh_key.pem
+    echo -e "$(sshPrivateKey)" > /tmp/temp_ssh_key.pem
+
+    chmod 400 /tmp/temp_ssh_key.pem
+
+    echo "Deploying artifact file to EC2 instance"
+
+    scp -r -i "/tmp/temp_ssh_key.pem" -o StrictHostKeyChecking=no $(System.DefaultWorkingDirectory)/url-short-service/target/c-url-short-service.war ubuntu@52.70.158.35:/home/ubuntu/temp_dir/
+    ssh -i "/tmp/temp_ssh_key.pem" -o StrictHostKeyChecking=no ubuntu@52.70.158.35 "sudo cp /home/ubuntu/temp_dir/c-url-short-service.war /var/lib/tomcat10/webapps/"
+
+    echo "Cleaning up temporary SSH key file"
+    rm /tmp/temp_ssh_key.pem
+  displayName: 'Deployment'
+  condition: eq(variables['Build.SourceBranchName'], 'backend')
